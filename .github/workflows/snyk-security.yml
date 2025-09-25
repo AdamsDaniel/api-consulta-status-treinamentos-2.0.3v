@@ -1,0 +1,108 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+# Snyk Security Workflow - Optimized Configuration
+# This workflow performs comprehensive security analysis using Snyk
+# Includes vulnerability scanning, dependency checking, and code analysis
+
+name: Snyk Security Analysis
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Run weekly security scans
+    - cron: '0 2 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  snyk-security:
+    name: Snyk Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      actions: read # only required for a private repository
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: |
+          npm ci --production=false
+          npm audit --audit-level moderate
+        continue-on-error: true
+      
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@806182742461562b67788a64410098c9d9b96adb
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      
+      - name: Snyk Code Analysis (SAST)
+        run: |
+          snyk code test --sarif-file-output=snyk-code.sarif --severity-threshold=medium
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      
+      - name: Snyk Open Source Analysis (SCA)
+        run: |
+          snyk test --sarif-file-output=snyk-opensource.sarif --severity-threshold=medium
+          snyk monitor --all-projects
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      
+      - name: Snyk Infrastructure as Code Analysis
+        run: |
+          snyk iac test --sarif-file-output=snyk-iac.sarif --severity-threshold=medium
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      
+      - name: Upload Snyk Code results to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+      
+      - name: Upload Snyk Open Source results to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-opensource.sarif
+          category: snyk-opensource
+      
+      - name: Upload Snyk IaC results to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-iac.sarif
+          category: snyk-iac
+      
+      - name: Archive security scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snyk-security-results
+          path: |
+            snyk-*.sarif
+          retention-days: 30
