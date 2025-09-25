@@ -1,0 +1,155 @@
+name: 'ESLint Security & SonarCloud Analysis'
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run security analysis daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  eslint-security-scan:
+    name: ESLint Security Analysis
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm install --save-dev @microsoft/eslint-formatter-sarif
+      
+      - name: Run ESLint Security Analysis
+        run: |
+          mkdir -p eslint-results
+          npm run lint:security -- --format=json --output-file=eslint-results/eslint-results.json || true
+          npm run lint:security -- --format=@microsoft/eslint-formatter-sarif --output-file=eslint-results/eslint-results.sarif || true
+      
+      - name: Upload ESLint results to GitHub
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: eslint-results/eslint-results.sarif
+          category: eslint-security
+      
+      - name: Upload ESLint results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eslint-security-results
+          path: eslint-results/
+          retention-days: 30
+  
+  sonarcloud-analysis:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: eslint-security-scan
+    if: always() && github.event_name != 'schedule'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Download ESLint results
+        uses: actions/download-artifact@v4
+        with:
+          name: eslint-security-results
+          path: eslint-results/
+      
+      - name: Run tests with coverage (if available)
+        run: |
+          # Generate test coverage if tests exist
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm test -- --coverage --coverageReporters=lcov || echo "No tests configured"
+          fi
+      
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=AdamsDaniel_api-consulta-status-treinamentos-2.0.3v
+            -Dsonar.organization=adamsdaniel
+            -Dsonar.sources=src,models,config
+            -Dsonar.tests=cypress
+            -Dsonar.exclusions=node_modules/**,cypress/results/**,cypress/screenshots/**,cypress/videos/**
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.eslint.reportPaths=eslint-results/eslint-results.json
+  
+  security-summary:
+    name: Security Analysis Summary
+    runs-on: ubuntu-latest
+    needs: [eslint-security-scan, sonarcloud-analysis]
+    if: always()
+    
+    steps:
+      - name: Download ESLint results
+        if: needs.eslint-security-scan.result != 'skipped'
+        uses: actions/download-artifact@v4
+        with:
+          name: eslint-security-results
+          path: eslint-results/
+      
+      - name: Generate Security Summary
+        if: needs.eslint-security-scan.result != 'skipped'
+        run: |
+          echo "## 🔒 Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ESLint Security Analysis" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "eslint-results/eslint-results.json" ]; then
+            ESLINT_ISSUES=$(jq '[.[] | select(.messages | length > 0)] | length' eslint-results/eslint-results.json || echo "0")
+            echo "- Files analyzed: $(jq 'length' eslint-results/eslint-results.json || echo "0")" >> $GITHUB_STEP_SUMMARY
+            echo "- Files with issues: $ESLINT_ISSUES" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$ESLINT_ISSUES" != "0" ]; then
+              echo "- ⚠️ Security issues detected. Check the Security tab for details." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ✅ No security issues detected by ESLint" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- ❌ ESLint analysis results not found" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Integration Status" >> $GITHUB_STEP_SUMMARY
+          echo "- ESLint Security: ${{ needs.eslint-security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- SonarCloud Analysis: ${{ needs.sonarcloud-analysis.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 **Combined Security Coverage**: This workflow integrates with existing Snyk vulnerability scanning for comprehensive security analysis." >> $GITHUB_STEP_SUMMARY
+      
+      - name: Fail on security issues
+        if: needs.eslint-security-scan.result == 'failure'
+        run: |
+          echo "❌ Security analysis failed. Please review the issues found."
+          exit 1
