@@ -7,7 +7,13 @@
     "test:cypress": "npx cypress run",
     "test:cypress:open": "npx cypress open",
     "dev": "nodemon ./src/app.js",
-    "start": "node ./src/app.js"
+    "start": "node ./src/app.js",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
+    "lint:security": "eslint . --ext .js,.jsx,.ts,.tsx --config .eslintrc.js",
+    "security:check": "npm audit && npm run lint:security",
+    "prestart": "npm run lint",
+    "predev": "npm run lint"
   },
   "keywords": [],
   "author": "Grupo 4",
@@ -34,6 +40,9 @@
   },
   "devDependencies": {
     "cypress": "^13.15.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-security": "^1.7.1",
+    "eslint-plugin-node": "^11.1.0",
     "mochawesome": "^7.1.3",
     "mochawesome-merge": "^4.3.0",
     "mochawesome-report-generator": "^6.2.0",
